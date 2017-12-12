@@ -1,0 +1,25 @@
+{
+  "name": "socrev-db",
+  "description": "Provide mongo DB functionality for socialistrevolution.org",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@gitlab.com/marxist/socialistrevolution.org-db.git"
+  },
+  "license": "ISC",
+  "bugs": {
+    "url": "https://gitlab.com/marxist/socialistrevolution.org-db/issues"
+  },
+  "dependencies": {
+    "body-parser": "^1.17.2",
+    "cors": "^2.8.3",
+    "dotenv": "^4.0.0",
+    "express": "^4.15.3",
+    "isomorphic-unfetch": "^2.0.0",
+    "mongodb": "^3.0.0-rc0",
+    "socket.io": "^2.0.4"
+  }
+}
