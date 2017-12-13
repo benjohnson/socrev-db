@@ -43,13 +43,17 @@ async function main() {
    * attempts to populate collections if empty
    *   fails if associated URLs are inaccessible
    */
-  const cNames = ['posts', 'cats']
+  //const cNames = ['posts', 'cats']
+  const cNames = ['posts', 'songs']
   let client
+  let collections = {}
   try {
-    client = await MongoClient.connect(url)
+    client = await MongoClient.connect(url, { poolSize: 10 })
     const db = client.db(dbName)
+    cNames.forEach(d => (collections[d] = db.collection(d)))
     let promises = cNames.map(async cName => {
-      const collection = db.collection(cName)
+      //const collection = db.collection(cName)
+      const collection = collections[cName]
       const count = await collection.count()
       if (count === 0) {
         try {
@@ -82,11 +86,27 @@ async function main() {
         'get records with latest modified date, make available to cmsCtrl, listen for updates from cmsCtrl'
       )
       app.get('/latest', async (req, res) => {
-        let result = {
-          post: '',
-          cat: '',
-        }
+        let promises = cNames.map(async cName => {
+          let result = {}
+          const collection = collections[cName]
+          const cursor = await collection
+            //.find({}, { _id: 0, id: 1, modified: 1 })
+            .find()
+            .sort({ modified: -1 })
+            .limit(1)
+          const record = (await cursor.hasNext()) ? await cursor.next() : null
+          result[cName] = record
+          return result
+        })
+        const results = await Promise.all(promises)
+        //const result = { ...results[0], ...results[1] }
+        let result = {}
+        results.forEach(d => (result[Object.keys(d)[0]] = Object.values(d)[0]))
+        res.json(result)
       })
+      const server = app.listen(port, () =>
+        console.log(`> ready on ${server.address().port}`)
+      )
       // find latest update in db
       // dbCtrl will send all posts to each api instance when an api instance starts
       // this can be split up into chunks of data if needed so it isn't too big
@@ -98,13 +118,12 @@ async function main() {
           categories,
         })
       })
-
-      const server = app.listen(port, () =>
-        console.log(`> ready on ${server.address().port}`)
-      )
       */
+
+      /*
       console.log('closing mongo connection')
       await client.close()
+      */
     }
   }
 }
