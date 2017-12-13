@@ -1,5 +1,6 @@
 const app = require('express')()
 const http = require('http').Server(app)
+const bodyParser = require('body-parser')
 const io = require('socket.io')(http)
 const cors = require('cors')
 const MongoClient = require('mongodb').MongoClient
@@ -17,7 +18,7 @@ const dbName = 'socrev'
 const url = `mongodb://${muser}:${mpass}@ds137256.mlab.com:37256/${dbName}?authMechanism=${authMechanism}`
 
 app.use(cors())
-//app.use(bodyParser.json())
+app.use(bodyParser.json())
 
 // import json file from cli:
 // mongoimport -h ds137256.mlab.com:37256 -d socrev -c posts -u mongo-admin -p fated-dropkick-shamrock-pinwheel --file posts.json --jsonArray
@@ -43,8 +44,8 @@ async function main() {
    * attempts to populate collections if empty
    *   fails if associated URLs are inaccessible
    */
-  //const cNames = ['posts', 'cats']
-  const cNames = ['posts', 'songs']
+  const cNames = ['posts', 'cats']
+  //const cNames = ['posts', 'songs']
   let client
   let collections = {}
   try {
@@ -101,13 +102,25 @@ async function main() {
         const results = await Promise.all(promises)
         //const result = { ...results[0], ...results[1] }
         let result = {}
-        results.forEach(d => (result[Object.keys(d)[0]] = Object.values(d)[0]))
+        results.forEach(
+          d => (result[Object.keys(d)[0]] = Object.values(d)[0] || {})
+        )
         res.json(result)
+      })
+      app.post('/update', async (req, res) => {
+        const collection = collections[`${req.body.type}s`]
+        const replaceResponse = await collection.findOneAndReplace(
+          { id: req.body.element.id },
+          req.body.element
+        )
+        const dbUpdateSuccess = replaceResponse.lastErrorObject.updatedExisting
+        // send update to API instances via websockets
+        if (dbUpdateSuccess) res.sendStatus(200)
+        else res.sendStatus(404)
       })
       const server = app.listen(port, () =>
         console.log(`> ready on ${server.address().port}`)
       )
-      // find latest update in db
       // dbCtrl will send all posts to each api instance when an api instance starts
       // this can be split up into chunks of data if needed so it isn't too big
       /*
@@ -127,4 +140,4 @@ async function main() {
     }
   }
 }
-main('songs')
+main()
