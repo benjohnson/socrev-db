@@ -1,7 +1,7 @@
 const app = require('express')()
 const http = require('http').Server(app)
 const bodyParser = require('body-parser')
-const io = require('socket.io')(http)
+let io = require('socket.io')
 const cors = require('cors')
 const MongoClient = require('mongodb').MongoClient
 const dotenv = require('dotenv')
@@ -34,9 +34,6 @@ const loadData = (arr, collection) => {
     })
   })
 }
-const update = (client, data, collectionName) => {
-  // update data within a collection
-}
 
 async function main() {
   /* creates client and connects to database
@@ -51,9 +48,9 @@ async function main() {
   try {
     client = await MongoClient.connect(url, { poolSize: 10 })
     const db = client.db(dbName)
-    cNames.forEach(d => (collections[d] = db.collection(d)))
+    cNames.forEach(d => (collections[d] = db.collection(d))) // create collection for each name
     let promises = cNames.map(async cName => {
-      //const collection = db.collection(cName)
+      // load data for each collection if empty and if data URL works
       const collection = collections[cName]
       const count = await collection.count()
       if (count === 0) {
@@ -83,10 +80,8 @@ async function main() {
     console.log(e)
   } finally {
     if (client !== undefined) {
-      console.log(
-        'get records with latest modified date, make available to cmsCtrl, listen for updates from cmsCtrl'
-      )
       app.get('/latest', async (req, res) => {
+        // provide db's lastest from each collection
         let promises = cNames.map(async cName => {
           let result = {}
           const collection = collections[cName]
@@ -108,30 +103,45 @@ async function main() {
         res.json(result)
       })
       app.post('/update', async (req, res) => {
+        // send update to mongo
         const collection = collections[`${req.body.type}s`]
         const replaceResponse = await collection.findOneAndReplace(
           { id: req.body.element.id },
           req.body.element
         )
         const dbUpdateSuccess = replaceResponse.lastErrorObject.updatedExisting
-        // send update to API instances via websockets
+        // send update to API
+        // TODO should websocket search update happen here also?
         if (dbUpdateSuccess) res.sendStatus(200)
         else res.sendStatus(404)
       })
       const server = app.listen(port, () =>
         console.log(`> ready on ${server.address().port}`)
       )
-      // dbCtrl will send all posts to each api instance when an api instance starts
-      // this can be split up into chunks of data if needed so it isn't too big
-      /*
-      io.on('connection', socket => {
-        console.log('client connected')
-        socket.emit('init', {
-          posts,
-          categories,
+      io = io.listen(server)
+      io.on('connection', async socket => {
+        // send all collection data when an api instance connects to init
+        console.log('API client connected')
+        let promises = cNames.map(async cName => {
+          let result = {}
+          const collection = collections[cName]
+          const cursor = await collection.find()
+          let records = []
+          while (await cursor.hasNext()) records.push(await cursor.next())
+          await Promise.all(records)
+          result[cName] = records
+          return result
+        })
+        const results = await Promise.all(promises)
+        let result = {}
+        results.forEach(
+          d => (result[Object.keys(d)[0]] = Object.values(d)[0] || {})
+        )
+        socket.emit('init', result)
+        socket.on('disconnect', () => {
+          console.log('user disconnected')
         })
       })
-      */
 
       /*
       console.log('closing mongo connection')
