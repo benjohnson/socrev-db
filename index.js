@@ -80,6 +80,24 @@ async function main() {
     console.log(e)
   } finally {
     if (client !== undefined) {
+      // create initResult object
+      let promises = cNames.map(async cName => {
+        let result = {}
+        const collection = collections[cName]
+        const cursor = await collection.find()
+        let records = []
+        while (await cursor.hasNext()) records.push(await cursor.next())
+        await Promise.all(records)
+        result[cName] = records
+        return result
+      })
+      const results = await Promise.all(promises)
+      let initResult = {}
+      results.forEach(
+        d => (initResult[Object.keys(d)[0]] = Object.values(d)[0] || {})
+      )
+
+      // setup REST endpoints
       app.get('/latest', async (req, res) => {
         // provide db's lastest from each collection
         let promises = cNames.map(async cName => {
@@ -118,29 +136,25 @@ async function main() {
       const server = app.listen(port, () =>
         console.log(`> ready on ${server.address().port}`)
       )
+
+      // setup websocket connection
       io = io.listen(server)
       io.on('connection', async socket => {
-        // send all collection data when an api instance connects to init
-        console.log('API client connected')
-        let promises = cNames.map(async cName => {
-          let result = {}
-          const collection = collections[cName]
-          const cursor = await collection.find()
-          let records = []
-          while (await cursor.hasNext()) records.push(await cursor.next())
-          await Promise.all(records)
-          result[cName] = records
-          return result
-        })
-        const results = await Promise.all(promises)
-        let result = {}
-        results.forEach(
-          d => (result[Object.keys(d)[0]] = Object.values(d)[0] || {})
+        console.log(
+          //`${`API client connected:`.padEnd(25, ' ')}${socket.client.id}`
+          `${socket.client.id} connected`
         )
-        socket.emit('init', result)
-        socket.on('disconnect', () => {
-          console.log('user disconnected')
+        socket.on('init', (msg, fn) => {
+          // send all collection data when an api instance connects to init
+          console.log(`${socket.client.id} init received, sending data`)
+          return fn(initResult)
         })
+        socket.on('disconnect', () =>
+          console.log(
+            //`${`API client disconnected:`.padEnd(25, ' ')}${socket.client.id}`
+            `${socket.client.id} disconnected`
+          )
+        )
       })
 
       /*
