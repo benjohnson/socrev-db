@@ -100,15 +100,24 @@ async function main() {
       // setup REST endpoints
       app.get('/latest', async (req, res) => {
         // provide db's lastest from each collection
+        // returns latest post based on modified,
+        // and full categories collection
         let promises = cNames.map(async cName => {
           let result = {}
           const collection = collections[cName]
-          const cursor = await collection
-            //.find({}, { _id: 0, id: 1, modified: 1 })
-            .find()
-            .sort({ modified: -1 })
-            .limit(1)
-          const record = (await cursor.hasNext()) ? await cursor.next() : null
+          let cursor, record
+          if (cName === 'cats') {
+            cursor = await collection.find()
+            record = []
+            while (await cursor.hasNext()) record.push(await cursor.next())
+            await Promise.all(record)
+          } else {
+            cursor = await collection
+              .find()
+              .sort({ modified: -1 })
+              .limit(1)
+            record = (await cursor.hasNext()) ? await cursor.next() : null
+          }
           result[cName] = record
           return result
         })
@@ -132,6 +141,15 @@ async function main() {
         // TODO should websocket search update happen here also?
         if (dbUpdateSuccess) res.sendStatus(200)
         else res.sendStatus(404)
+      })
+      app.post('/updates', async (req, res) => {
+        // delete and replace collection
+        // cmsCtrl calls when updating categories
+        const collection = collections[`${req.body.type}`]
+        await collection.deleteMany()
+        const insertResponse = await collection.insertMany(req.body.element)
+        if (insertResponse.result.ok === 1) res.sendStatus(200)
+        else res.sendStatus(500)
       })
       const server = app.listen(port, () =>
         console.log(`> ready on ${server.address().port}`)

@@ -7,11 +7,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@gitlab.com/marxist/socialistrevolution.org-db.git"
+    "url": "git+ssh://git@gitlab.com/marxist/socrev-db.git"
   },
   "license": "ISC",
   "bugs": {
-    "url": "https://gitlab.com/marxist/socialistrevolution.org-db/issues"
+    "url": "https://gitlab.com/marxist/socrev-db/issues"
   },
   "dependencies": {
     "body-parser": "^1.17.2",
