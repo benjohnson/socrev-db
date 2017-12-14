@@ -20,9 +20,6 @@ const url = `mongodb://${muser}:${mpass}@ds137256.mlab.com:37256/${dbName}?authM
 app.use(cors())
 app.use(bodyParser.json())
 
-// import json file from cli:
-// mongoimport -h ds137256.mlab.com:37256 -d socrev -c posts -u mongo-admin -p fated-dropkick-shamrock-pinwheel --file posts.json --jsonArray
-
 const loadData = (arr, collection) => {
   // loads arr to a collection
   const collectionName = collection.s.name
