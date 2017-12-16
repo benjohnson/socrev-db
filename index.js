@@ -127,11 +127,12 @@ async function main() {
         res.json(result)
       })
       app.post('/update', async (req, res) => {
-        // send update to mongo
-        const collection = collections[`${req.body.type}s`]
+        // either updates or create record in mongo
+        const collection = collections[`${req.body.type}`]
         const replaceResponse = await collection.findOneAndReplace(
           { id: req.body.element.id },
-          req.body.element
+          req.body.element,
+          { upsert: true }
         )
         const dbUpdateSuccess = replaceResponse.lastErrorObject.updatedExisting
         // send update to API
