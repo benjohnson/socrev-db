@@ -13,9 +13,13 @@ dotenv.config()
 const port = process.env.PORT
 const muser = encodeURIComponent(process.env.MONGO_USER)
 const mpass = encodeURIComponent(process.env.MONGO_PASSWORD)
+const algoliaId = process.env.ALGOLIA_ID
+const algoliaKey = process.env.ALGOLIA_KEY
 const authMechanism = 'DEFAULT'
 const dbName = 'socrev'
 const url = `mongodb://${muser}:${mpass}@ds137256.mlab.com:37256/${dbName}?authMechanism=${authMechanism}`
+
+const search = require('./src/algolia')(algoliaId, algoliaKey)
 
 app.use(cors())
 app.use(bodyParser.json())
@@ -32,6 +36,57 @@ const loadData = (arr, collection) => {
   })
 }
 
+const updateSearch = async postsCollection => {
+  // synchronize algolia with db
+  console.log('updating search...')
+  const getSearchUpdates = async dateStr => {
+    // get all posts from db that are newer than latest in algolia
+    const cursor = await postsCollection.find({ modified: { $gt: dateStr } })
+    let records = []
+    while (await cursor.hasNext()) records.push(await cursor.next())
+    return await Promise.all(records)
+  }
+
+  // get everything from algolia
+  let hits = await search.getAll()
+  console.log(`algolia collection length: ${hits.length}`)
+  hits = hits.sort((a, b) => {
+    const aDate = new Date(a.modified).getTime()
+    const bDate = new Date(b.modified).getTime()
+    return bDate - aDate
+  })
+  // get latest algolia date
+  const algoliaLatest = hits[0].modified
+  console.log(`latest in algolia: ${algoliaLatest}`)
+  // get db posts that are newer than algolia
+  const newPosts = await getSearchUpdates(algoliaLatest)
+  console.log(`posts newer than algolia: ${newPosts.length}`)
+  if (newPosts.length > 0) {
+    // collect associated algolia objectIDs
+    const objectIDs = []
+    hits.forEach(d => {
+      if (newPosts.map(p => p.id).includes(d.id)) {
+        objectIDs.push(d.objectID)
+      }
+    })
+    // delete associated algolia records
+    const deleteResponse = await search.deletePosts(objectIDs)
+    console.log(`deleted associated algolia records: ${objectIDs.length}`)
+    console.log(deleteResponse)
+    // modify/split posts, send to algolia
+    await search.handleUpdates(newPosts)
+    console.log('search updated')
+  } else console.log(`algolia is already synchronized`)
+}
+let searchTimeout
+const scheduleSearch = postsCollection => {
+  const searchTimer = 1000 * 60 * 3 // 3mins
+  clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(async () => {
+    await updateSearch(postsCollection)
+  }, searchTimer)
+}
+
 async function main() {
   /* creates client and connects to database
    * connects to or creates collections
@@ -39,7 +94,6 @@ async function main() {
    *   fails if associated URLs are inaccessible
    */
   const cNames = ['posts', 'cats']
-  //const cNames = ['posts', 'songs']
   let client
   let collections = {}
   try {
@@ -77,28 +131,14 @@ async function main() {
     console.log(e)
   } finally {
     if (client !== undefined) {
-      // create initResult object
-      let promises = cNames.map(async cName => {
-        let result = {}
-        const collection = collections[cName]
-        const cursor = await collection.find()
-        let records = []
-        while (await cursor.hasNext()) records.push(await cursor.next())
-        await Promise.all(records)
-        result[cName] = records
-        return result
-      })
-      const results = await Promise.all(promises)
-      let initResult = {}
-      results.forEach(
-        d => (initResult[Object.keys(d)[0]] = Object.values(d)[0] || {})
-      )
+      // update search
+      await updateSearch(collections.posts)
 
       // setup REST endpoints
       app.get('/latest', async (req, res) => {
         // provide db's lastest from each collection
-        // returns latest post based on modified,
-        // and full categories collection
+        // returns latest post and all categories
+        // requested by cms to determine updates
         let promises = cNames.map(async cName => {
           let result = {}
           const collection = collections[cName]
@@ -128,6 +168,7 @@ async function main() {
       })
       app.post('/update', async (req, res) => {
         // either updates or create record in mongo
+        console.log(`received ${req.body.type} update`)
         const collection = collections[`${req.body.type}`]
         const replaceResponse = await collection.findOneAndReplace(
           { id: req.body.element.id },
@@ -135,17 +176,23 @@ async function main() {
           { upsert: true }
         )
         const dbUpdateSuccess = replaceResponse.lastErrorObject.updatedExisting
-        // send update to API
-        // TODO should websocket search update happen here also?
+
+        // TODO update API
+
+        scheduleSearch(collections.posts)
+
         if (dbUpdateSuccess) res.sendStatus(200)
         else res.sendStatus(404)
       })
       app.post('/updates', async (req, res) => {
         // delete and replace collection
-        // cmsCtrl calls when updating categories
+        // cms calls when updating categories
         const collection = collections[`${req.body.type}`]
         await collection.deleteMany()
         const insertResponse = await collection.insertMany(req.body.element)
+
+        // TODO update API
+
         if (insertResponse.result.ok === 1) res.sendStatus(200)
         else res.sendStatus(500)
       })
@@ -160,9 +207,25 @@ async function main() {
           //`${`API client connected:`.padEnd(25, ' ')}${socket.client.id}`
           `${socket.client.id} connected`
         )
-        socket.on('init', (msg, fn) => {
+        socket.on('init', async (msg, fn) => {
           // send all collection data when an api instance connects to init
           console.log(`${socket.client.id} init received, sending data`)
+          // create initResult object
+          let promises = cNames.map(async cName => {
+            let result = {}
+            const collection = collections[cName]
+            const cursor = await collection.find()
+            let records = []
+            while (await cursor.hasNext()) records.push(await cursor.next())
+            await Promise.all(records)
+            result[cName] = records
+            return result
+          })
+          const results = await Promise.all(promises)
+          let initResult = {}
+          results.forEach(
+            d => (initResult[Object.keys(d)[0]] = Object.values(d)[0] || {})
+          )
           return fn(initResult)
         })
         socket.on('disconnect', () =>
