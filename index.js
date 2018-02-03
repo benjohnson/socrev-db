@@ -95,10 +95,11 @@ async function main() {
    */
   const cNames = ['posts', 'cats']
   let client
+  let db
   let collections = {}
   try {
     client = await MongoClient.connect(url, { poolSize: 10 })
-    const db = client.db(dbName)
+    db = client.db(dbName)
     cNames.forEach(d => (collections[d] = db.collection(d))) // create collection for each name
     let promises = cNames.map(async cName => {
       // load data for each collection if empty and if data URL works
@@ -195,6 +196,18 @@ async function main() {
 
         if (insertResponse.result.ok === 1) res.sendStatus(200)
         else res.sendStatus(500)
+      })
+      app.get('/slug', async (req, res) => {
+        // gets an article slug (given an id)
+        const id = !isNaN(req.query.id) ? parseInt(req.query.id) : null
+        if (id === null) {
+          res.status(400).send(`bad request (non-number id: ${req.query.id})`)
+          return
+        }
+        const collection = db.collection('redirects')
+        const response = await collection.findOne({ old: id })
+        console.log(response)
+        res.send(response)
       })
       const server = app.listen(port, () =>
         console.log(`> ready on ${server.address().port}`)
