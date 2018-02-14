@@ -198,7 +198,7 @@ async function main() {
         else res.sendStatus(500)
       })
       app.get('/slug', async (req, res) => {
-        // gets an article slug (given an id)
+        // returns an article slug (given an id)
         const id = !isNaN(req.query.id) ? parseInt(req.query.id) : null
         if (id === null) {
           res.status(400).send(`bad request (non-number id: ${req.query.id})`)

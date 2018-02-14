@@ -77,6 +77,7 @@ async function main() {
             old: oldId,
             new: result.id,
             author: author,
+            slug: result.slug,
           })
         }
         //}
