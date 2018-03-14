@@ -1,7 +1,9 @@
+const fs = require('fs')
 const algoliasearch = require('algoliasearch')
-//const chunk = require('lodash.chunk')
+const chunk = require('lodash.chunk')
 
 let client, index
+let errors = []
 
 const grabText = str => {
   // remove html and other junk from text
@@ -94,41 +96,50 @@ const splitPosts = posts => {
   // ensure all posts are under 10k bytes
   let results = []
   posts.forEach(p => {
-    const maxByteSize = 5000
-    let bytes = Buffer.byteLength(JSON.stringify(p), 'utf8')
-    let numOfSplits = Math.floor(bytes / maxByteSize) // number of splits
-    let spaceIndices = [] // all space indices
-    p.content
-      .split('')
-      .forEach((d, i) => (d === ' ' ? spaceIndices.push(i) : null))
-    let splitLength = p.content.length / numOfSplits // equal content length
-    let spaceSplits = [0]
-    const closest = (num, arr) => {
-      // https://stackoverflow.com/questions/8584902/get-closest-number-out-of-array#8584940
-      let mid
-      let lo = 0
-      let hi = arr.length - 1
-      while (hi - lo > 1) {
-        mid = Math.floor((lo + hi) / 2)
-        if (arr[mid] < num) lo = mid
-        else hi = mid
+    const maxByteSize = 10000
+    const content = [...p.content]
+    delete p.content
+    p.objectID = `${`${p.id}`.padStart(4, '0')}-999-999`
+
+    let postOtherBytes = Buffer.byteLength(JSON.stringify(p), 'utf8')
+    //console.log(`> ${p.id}: post ${postOtherBytes}`)
+    const add = 11 // content byte size is off by 11
+
+    let contentBytes = 0
+    let splits = []
+    content.forEach((entry, i) => {
+      const bytes = Buffer.byteLength(JSON.stringify(entry), 'utf8') + add
+      const currentSize = postOtherBytes + contentBytes + bytes
+      if (currentSize < maxByteSize) {
+        contentBytes += bytes
+      } else {
+        // this post has reached max size
+        splits.push(i)
+        //console.log(`> ${p.id}:${splits.length} size ${postOtherBytes + contentBytes}`)
+        // aggregate bytes of each content entry starting with the current
+        contentBytes = bytes
       }
-      if (num - arr[lo] <= arr[hi] - num) return arr[lo]
-      return arr[hi]
-    }
-    for (let i = 0; i < numOfSplits; i++) {
-      // for number of needed splits
-      let result = JSON.parse(JSON.stringify(p)) // create post copy
-      let length
-      if (i + 1 === numOfSplits)
-        length = spaceSplits.push(p.content.length) // content length on last iteration
-      else
-        length = spaceSplits.push(closest(splitLength * (i + 1), spaceIndices))
-      result.content = p.content
-        .substring(spaceSplits[length - 2], spaceSplits[length - 1])
-        .trim()
-      results.push(result)
-    }
+    })
+    splits.push(content.length)
+    splits.forEach((splitIndex, i, arr) => {
+      const prevSplit = i - 1 < 0 ? 0 : arr[i - 1]
+      //console.log(`splits: current ${splitIndex} previous ${prevSplit}`)
+      let newPost = Object.assign({}, p)
+      const pb = Buffer.byteLength(JSON.stringify(p), 'utf8')
+      const newContent = content.slice(prevSplit, splitIndex)
+      const cb = Buffer.byteLength(JSON.stringify(newContent), 'utf8')
+      const calcSize = pb + cb + add
+      newPost.content = newContent
+      const realSize = Buffer.byteLength(JSON.stringify(newPost), 'utf8')
+      newPost.objectID = `${`${newPost.id}`.padStart(4, '0')}-${`${i +
+        1}`.padStart(3, '0')}-${`${splits.length}`.padStart(3, '0')}` // match algolia's objectID with our id
+      if (calcSize !== realSize) {
+        console.log(`calc: ${pb} + ${cb} = ${calcSize}`)
+        console.log(`real: ${realSize}`)
+        console.log(`diff ${Math.abs(realSize - calcSize)}`)
+      }
+      results.push(newPost)
+    })
   })
   return results
 }
@@ -137,22 +148,34 @@ const sendPost = (post, ind) => {
   return new Promise((resolve, reject) => {
     index.addObject(post, (errA, content) => {
       if (errA) {
-        // past errors were caused exclusively due to post size
-        errors.push(ind)
-        resolve()
-        console.log(
+        // post size errors show up here
+        if (!errors.includes(post.id)) errors.push(post.id)
+        return reject(
           `${post.id}: ${errA.message.replace('the position 0', ind)}`
         )
-        return
       }
       index.waitTask(content.taskID, errB => {
-        if (errB) {
-          console.log(`${post.id}: ${errB.message}`)
-          resolve()
-          return
-        }
-        console.log(`${post.id}: ${ind} indexed at ${content.objectID}`)
+        if (errB) return reject(`${post.id}: ${errB.message}`)
+        console.log(`> ${post.id}: ${ind} indexed at ${content.objectID}`)
         resolve()
+      })
+    })
+  })
+}
+
+const sendPosts = posts => {
+  /*
+  const chunks = chunk(posts, 1000)
+  chunks.map(batch => index.addObjects(batch))
+  */
+  console.log(`> sending ${posts.length} new records to algolia`)
+  return new Promise((resolve, reject) => {
+    index.addObjects(posts, (errAdd, content) => {
+      if (errAdd) return reject(errAdd)
+      index.waitTask(content.taskID, errWait => {
+        if (errWait) return reject(`${post.id}: ${errWait.message}`)
+        console.log(`> ${post.id}: ${ind} indexed at ${content.objectID}`)
+        resolve(content)
       })
     })
   })
@@ -169,10 +192,13 @@ module.exports = function(id, key) {
           searchableAttributes: [
             'slug',
             'title',
-            //'categories',
+            'categories',
+            'tags',
             'excerpt',
             'content',
             'author',
+            'date',
+            'modified',
           ],
           typoTolerance: 'min',
           attributeForDistinct: 'id',
@@ -206,25 +232,43 @@ module.exports = function(id, key) {
         })
       })
     },
+    splitPosts,
+    sendPost,
     handleUpdates: async posts => {
       // recieves/modifies/splits posts, sends to algolia
-      console.log(`applying algolia post modification to ${posts.length} posts`)
-      posts = modPosts(posts)
-      console.log(`applying algolia split to ${posts.length} posts`)
+      //console.log(`applying algolia post modification to ${posts.length} posts`)
+      //posts = modPosts(posts)
+
+      // algolia will get posts starting with oldest of newest db posts
+      posts.sort((a, b) => a.modified - b.modified)
+
+      console.log(`> applying algolia split to ${posts.length} posts`)
       posts = splitPosts(posts)
-      console.log(`sending ${posts.length} new records to algolia`)
+
+      /*
       let promises = []
-      posts.forEach((d, i) => {
+      posts.forEach(async (d, i) => {
         promises.push(sendPost(d, i))
       })
       await Promise.all(promises)
+      */
+
+      for (let i = 0; i < posts.length; i++) {
+        await sendPost(posts[i], i).catch(console.error)
+        //if(errors.length > 0)
+      }
+      console.log(`errors: ${errors.length}`)
+      errors.forEach(console.error)
+
+      return errors
+      //await sendPosts(posts)
+
+      /*
+      fs.writeFileSync(
+        '/Users/joshua/projects/imt/algoliaerrors.json',
+        JSON.stringify(errors)
+      )
+      */
     },
   }
 }
-
-/*
-const sendPosts = posts => {
-  const chunks = chunk(posts, 500)
-  chunks.map(batch => index.addObjects(batch))
-}
-*/

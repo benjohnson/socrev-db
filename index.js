@@ -6,7 +6,6 @@ const cors = require('cors')
 const MongoClient = require('mongodb').MongoClient
 const Long = require('mongodb').Long
 const dotenv = require('dotenv')
-const fs = require('fs')
 const fetch = require('isomorphic-unfetch')
 
 dotenv.config()
@@ -25,17 +24,17 @@ const url =
     : `mongodb://${muser}:${mpass}@${mongoHost}/${dbName}?authMechanism=${authMechanism}`
 
 const search = require('./src/algolia')(algoliaId, algoliaKey)
+const algoliaErrors = []
 
 app.use(cors())
-app.use(bodyParser.json())
+app.use(bodyParser.json({ limit: '300kb' }))
 
 const loadData = (arr, collection) => {
   // loads arr to a collection
-  const collectionName = collection.s.name
   return new Promise((resolve, reject) => {
     collection.insert(arr, (err, result) => {
       if (err) reject(err)
-      console.log(`${arr.length} documents inserted into ${collectionName}`)
+      console.log(`${arr.length} documents inserted into ${collection.s.name}`)
       resolve()
     })
   })
@@ -44,9 +43,9 @@ const loadData = (arr, collection) => {
 const updateSearch = async postsCollection => {
   // synchronize algolia with db
   console.log('> checking if algolia needs updates...')
-  const getSearchUpdates = async dateStr => {
+  const getSearchUpdates = async dateMs => {
     // get all posts from db that are newer than latest in algolia
-    const cursor = await postsCollection.find({ modified: { $gt: dateStr } })
+    const cursor = await postsCollection.find({ modified: { $gt: dateMs } })
     let records = []
     while (await cursor.hasNext()) records.push(await cursor.next())
     return await Promise.all(records)
@@ -60,12 +59,24 @@ const updateSearch = async postsCollection => {
     const bDate = new Date(b.modified).getTime()
     return bDate - aDate
   })
+
   // get latest algolia date
-  const algoliaLatest = hits[0].modified
+  const algoliaLatest =
+    Array.isArray(hits) && hits.length > 0 ? hits[0].modified : 0
   console.log(`> latest in algolia: ${algoliaLatest}`)
   // get db posts that are newer than algolia
-  const newPosts = await getSearchUpdates(algoliaLatest)
+  let newPosts = await getSearchUpdates(algoliaLatest)
   console.log(`> posts newer than algolia: ${newPosts.length}`)
+  if (algoliaErrors.length > 0) {
+    const errPosts = await postsCollection.find({ _id: { $in: algoliaErrors } })
+    newPosts = newPosts.concat(errPosts)
+    newPosts = newPosts
+    newPosts = [...new Set(newPosts.map(d => d.id))]
+    console.log(
+      `> posts for algolia including previous errors: ${newPosts.length}`
+    )
+  }
+
   if (newPosts.length > 0) {
     // collect associated algolia objectIDs
     const objectIDs = []
@@ -76,10 +87,10 @@ const updateSearch = async postsCollection => {
     })
     // delete associated algolia records
     const deleteResponse = await search.deletePosts(objectIDs)
-    console.log(`> deleted associated algolia records: ${objectIDs.length}`)
-    console.log(deleteResponse)
+    console.log(`> deleted ${objectIDs.length} associated algolia records`)
+    //console.log(deleteResponse)
     // modify/split posts, send to algolia
-    await search.handleUpdates(newPosts)
+    algoliaErrors = await search.handleUpdates(newPosts)
     console.log('> search updated')
   } else console.log(`> algolia is already synchronized`)
 }
@@ -171,7 +182,7 @@ async function main() {
   } finally {
     if (client !== undefined) {
       // mongo data is ready, sync algolia
-      //await updateSearch(collections.posts)
+      await updateSearch(collections.posts)
 
       // setup REST endpoints
       app.get('/latest', async (req, res) => {
@@ -222,7 +233,7 @@ async function main() {
 
         // TODO update API
 
-        //scheduleSearch(collections.posts)
+        scheduleSearch(collections['posts'])
 
         if (dbUpdateSuccess) {
           res.sendStatus(200)
@@ -252,8 +263,50 @@ async function main() {
         if (insertResponse.result.ok === 1) res.sendStatus(200)
         else res.sendStatus(500)
       })
+
+      app.post('/fromid', async (req, res) => {
+        // returns article details slug given old (SA) or new (SR) id
+        console.log('> /fromid')
+        console.log(req.body)
+
+        const hasId = val => val !== undefined && !isNaN(val)
+
+        const hasOldId = hasId(req.body.old)
+        const hasNewId = hasId(req.body.new)
+
+        //const posts = collections['posts']
+        const redirects = db.collection('redirects')
+
+        let response
+        let status = 200
+
+        if (hasOldId || hasNewId) {
+          if (hasOldId) {
+            console.log(`querying redirects for ${req.body.old}`)
+            response = await redirects.findOne({ old: req.body.old })
+          }
+          if (hasNewId) {
+            //console.log(`querying posts for ${req.body.new}`)
+            //response = await posts.findOne({ id: req.body.new })
+            console.log(`querying redirects for ${req.body.new}`)
+            response = await redirects.findOne({ new: req.body.new })
+          }
+        } else {
+          status = 400
+          response = {
+            message: 'bad request (body had neither old or new ID)',
+          }
+        }
+        if (response === null) {
+          console.error(`> query to redirects collection returned null`)
+        }
+
+        res.status(status).json(response)
+      })
+
       app.get('/slug', async (req, res) => {
-        // returns an article slug (given an id)
+        // returns an article slug given an old SA id
+        // TODO remove this, replaced by /fromid above
         const id = !isNaN(req.query.id) ? parseInt(req.query.id) : null
         if (id === null) {
           res.status(400).send(`bad request (non-number id: ${req.query.id})`)
@@ -264,6 +317,7 @@ async function main() {
         console.log(response)
         res.send(response)
       })
+
       const server = app.listen(port, () =>
         console.log(`> ready on ${server.address().port}`)
       )

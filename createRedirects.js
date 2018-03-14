@@ -14,6 +14,7 @@ const mpass = encodeURIComponent(process.env.MONGO_PASSWORD)
 const authMechanism = 'DEFAULT'
 const dbName = 'socrev'
 const url = `mongodb://${muser}:${mpass}@ds137256.mlab.com:37256/${dbName}?authMechanism=${authMechanism}`
+//const url = 'mongodb://localhost:27017'
 
 const loadData = async (arr, collection) => {
   await collection.drop()
@@ -56,22 +57,60 @@ async function main() {
         const oldId = parseInt(d.id)
         const oldSlug = d.alias
         const author = d.created_by_alias
+        const title = d.title
         //const created = new Date(d.created).getTime()
         //const oldCreated = new Date(d.created)
         const oldCreated = d.created
 
-        // find associated entry in posts collection
-        const result = await collection.findOne({
-          slug: { $regex: `.*${oldSlug}.*` },
-          //date: { $date: new Date(oldCreated) },
-          //date: oldCreated,
-          //date: { $date: oldCreated},
-          //date: new Date(d.created),
-          status: 'publish',
+        let log = `${d.id} | ${oldSlug}`
+
+        // 1. by slug
+        // regex trims - characters
+        const searchSlug = d.alias.replace(/^\-+|\-+$/g, '')
+        let result = await collection.findOne({
+          slug: { $regex: `${oldSlug}` },
         })
-        if (result === null)
-          jErrors.push({ oldId, oldSlug, author, oldCreated })
-        else {
+        if (result === null) {
+          log += ` | ${oldCreated}`
+          // 2. by date
+          // current (old) version of posts collection stores date in an old string format
+          // we must match this exactly instead of searching by date
+          const date = new Date(oldCreated)
+          const searchDate = `${date.getFullYear()}-${`${date.getMonth() +
+            1}`.padStart(
+            2,
+            '0'
+          )}-${date.getDate()}T${`${date.getHours()}`.padStart(
+            2,
+            '0'
+          )}:${`${date.getMinutes()}`.padStart(
+            2,
+            '0'
+          )}:${`${date.getSeconds()}`.padStart(2, '0')}`
+          result = await collection.findOne({
+            date: searchDate,
+          })
+          if (result === null) {
+            // 3. by title
+            log += ` | ${title}`
+            result = await collection.findOne({
+              'title.rendered': {
+                $regex: title,
+                $options: 'i',
+              },
+            })
+            if (result === null) {
+              log += ' | NOT FOUND'
+              /*
+              throw new Error(
+                `new doc not found for ${oldId}: ${oldSlug} ${oldCreated}`
+              )
+              */
+              jErrors.push({ oldId, title, oldSlug, author, oldCreated })
+            }
+          }
+        }
+        if (result !== null) {
           // push new association object to array
           jRedirects.push({
             old: oldId,
@@ -79,6 +118,8 @@ async function main() {
             author: author,
             slug: result.slug,
           })
+        } else {
+          console.error(log)
         }
         //}
       })
