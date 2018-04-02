@@ -7,6 +7,7 @@ const MongoClient = require('mongodb').MongoClient
 const Long = require('mongodb').Long
 const dotenv = require('dotenv')
 const fetch = require('isomorphic-unfetch')
+const uniqBy = require('lodash.uniqby')
 
 dotenv.config()
 
@@ -24,10 +25,10 @@ const url =
     : `mongodb://${muser}:${mpass}@${mongoHost}/${dbName}?authMechanism=${authMechanism}`
 
 const search = require('./src/algolia')(algoliaId, algoliaKey)
-const algoliaErrors = []
+let algoliaErrors = [307, 2217, 2273, 2373, 7449]
 
 app.use(cors())
-app.use(bodyParser.json({ limit: '300kb' }))
+app.use(bodyParser.json({ limit: '300kb' })) // increase size limit for large wp posts
 
 const loadData = (arr, collection) => {
   // loads arr to a collection
@@ -44,8 +45,18 @@ const updateSearch = async postsCollection => {
   // synchronize algolia with db
   console.log('> checking if algolia needs updates...')
   const getSearchUpdates = async dateMs => {
-    // get all posts from db that are newer than latest in algolia
-    const cursor = await postsCollection.find({ modified: { $gt: dateMs } })
+    // get all published posts from db that are newer than latest in algolia
+    // TODO handle deleting posts from algolia when some other status
+    const cursor = await postsCollection.find({
+      modified: { $gt: dateMs },
+      //status: 'publish',
+    })
+    let records = []
+    while (await cursor.hasNext()) records.push(await cursor.next())
+    return await Promise.all(records)
+  }
+  const getSearchErrors = async () => {
+    const cursor = await postsCollection.find({ id: { $in: algoliaErrors } })
     let records = []
     while (await cursor.hasNext()) records.push(await cursor.next())
     return await Promise.all(records)
@@ -66,12 +77,16 @@ const updateSearch = async postsCollection => {
   console.log(`> latest in algolia: ${algoliaLatest}`)
   // get db posts that are newer than algolia
   let newPosts = await getSearchUpdates(algoliaLatest)
+
+  // TODO delete all non-publish newPosts from algolia 
+
   console.log(`> posts newer than algolia: ${newPosts.length}`)
   if (algoliaErrors.length > 0) {
-    const errPosts = await postsCollection.find({ _id: { $in: algoliaErrors } })
+    const errPosts = await getSearchErrors(algoliaLatest)
+    errPosts.forEach(d => console.log(`${d.id}: ${d.slug}`))
     newPosts = newPosts.concat(errPosts)
-    newPosts = newPosts
-    newPosts = [...new Set(newPosts.map(d => d.id))]
+    newPosts = uniqBy(newPosts, 'id')
+
     console.log(
       `> posts for algolia including previous errors: ${newPosts.length}`
     )
@@ -218,7 +233,7 @@ async function main() {
       })
       app.post('/update', async (req, res) => {
         // either updates or creates record in mongo
-        console.log(`> received ${req.body.type} update`)
+        console.log(`> /update type: ${req.body.type}`)
         const collection = collections[`${req.body.type}`]
         req.body.element.date = Long.fromString(`${req.body.element.date}`)
         req.body.element.modified = Long.fromString(
@@ -266,8 +281,7 @@ async function main() {
 
       app.post('/fromid', async (req, res) => {
         // returns article details slug given old (SA) or new (SR) id
-        console.log('> /fromid')
-        console.log(req.body)
+        console.log(`> /fromid ${req.body}`)
 
         const hasId = val => val !== undefined && !isNaN(val)
 
@@ -336,7 +350,7 @@ async function main() {
           let promises = cNames.map(async cName => {
             let result = {}
             const collection = collections[cName]
-            const cursor = await collection.find()
+            const cursor = await collection.find().sort({ modified: -1 })
             let records = []
             while (await cursor.hasNext()) records.push(await cursor.next())
             await Promise.all(records)

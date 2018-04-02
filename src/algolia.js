@@ -95,7 +95,7 @@ const modPosts = posts => {
 const splitPosts = posts => {
   // ensure all posts are under 10k bytes
   let results = []
-  posts.forEach(p => {
+  posts.forEach((p, i) => {
     const maxByteSize = 10000
     const content = [...p.content]
     delete p.content
@@ -156,7 +156,11 @@ const sendPost = (post, ind) => {
       }
       index.waitTask(content.taskID, errB => {
         if (errB) return reject(`${post.id}: ${errB.message}`)
-        console.log(`> ${post.id}: ${ind} indexed at ${content.objectID}`)
+        console.log(
+          `> ${`${post.id}`.padStart(4)}: ${`${ind}`.padStart(3)} indexed at ${
+            content.objectID
+          }`
+        )
         resolve()
       })
     })
@@ -257,8 +261,6 @@ module.exports = function(id, key) {
         await sendPost(posts[i], i).catch(console.error)
         //if(errors.length > 0)
       }
-      console.log(`errors: ${errors.length}`)
-      errors.forEach(console.error)
 
       return errors
       //await sendPosts(posts)
